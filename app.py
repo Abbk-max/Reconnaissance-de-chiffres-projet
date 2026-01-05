@@ -5,152 +5,138 @@ import cv2
 from PIL import Image
 
 # ================================
-# CONFIGURATION DE LA PAGE
+# CONFIG PAGE
 # ================================
 st.set_page_config(
-    page_title="Reconnaissance MNIST Pro",
-    page_icon="🔢",
+    page_title="MNIST Digit Recognition",
+    page_icon="✏️",
     layout="centered"
 )
 
 # ================================
-# CHARGEMENT DU MODÈLE
+# LOAD MODEL
 # ================================
 @st.cache_resource
 def load_model():
-    # Remplace "mnist_model.keras" par le nom exact de ton fichier
+    # Assure-toi que le nom du fichier est correct
     return tf.keras.models.load_model("mnist_model.keras")
 
 model = load_model()
 
 # ================================
-# PRÉTRAITEMENT ROBUSTE (PHOTO & FICHIER)
+# PREPROCESSING (MNIST-COMPATIBLE)
 # ================================
-def preprocess_digit(img_array):
+def preprocess_image(img):
     """
-    Transforme une image (caméra ou upload) en format MNIST 28x28.
-    Gère les traits fins et les variations de lumière.
+    Transforme une photo ou un upload en format 28x28 compatible MNIST.
     """
-    # 1. Conversion en niveaux de gris
-    if len(img_array.shape) == 3:
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    else:
-        gray = img_array
+    # --- CONVERSION GRIS ---
+    if len(img.shape) == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
-    # 2. Amélioration du contraste pour les écritures fines (CLAHE)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    gray = clahe.apply(gray)
-
-    # 3. Flou pour réduire le grain de la photo
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # 4. Binarisation Adaptative (indispensable pour les photos réelles)
-    thresh = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+    # --- NETTOYAGE LUMIÈRE (Pour les photos) ---
+    # Utilisation d'un seuil adaptatif pour gérer les ombres sur le papier
+    img = cv2.GaussianBlur(img, (5, 5), 0)
+    img = cv2.adaptiveThreshold(
+        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
         cv2.THRESH_BINARY_INV, 11, 2
     )
 
-    # 5. Détection du contenu pour recadrage
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if not contours:
-        return None
+    # --- ÉPAISSIR LES TRAITS ---
+    kernel = np.ones((3, 3), np.uint8)
+    img = cv2.dilate(img, kernel, iterations=1)
 
-    # On prend le plus grand contour (le chiffre)
+    # --- DÉTECTION DU CHIFFRE ---
+    contours, _ = cv2.findContours(
+        img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    if not contours:
+        return None, 0.0
+
     cnt = max(contours, key=cv2.contourArea)
     x, y, w, h = cv2.boundingRect(cnt)
-    roi = thresh[y:y+h, x:x+w]
 
-    # 6. Épaississement dynamique (Dilation) si le trait est trop fin
-    kernel = np.ones((3,3), np.uint8)
-    if cv2.countNonZero(roi) < (roi.shape[0] * roi.shape[1] * 0.2):
-        roi = cv2.dilate(roi, kernel, iterations=1)
+    quality = min(1.0, cv2.contourArea(cnt) / 500)
+    digit = img[y:y+h, x:x+w]
 
-    # 7. Redimensionnement vers 20x20 (en gardant les proportions)
-    final_size = 20
-    mask = np.zeros((final_size, final_size), dtype=np.uint8)
-    if w > h:
-        new_w = final_size
-        new_h = int(h * (final_size / w))
-    else:
-        new_h = final_size
-        new_w = int(w * (final_size / h))
-    
-    roi_res = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    
-    # Centrage dans le masque 20x20
-    xx = (final_size - new_w) // 2
-    yy = (final_size - new_h) // 2
-    mask[yy:yy+new_h, xx:xx+new_w] = roi_res
+    # --- RESIZE & PADDING ---
+    digit = cv2.resize(digit, (20, 20), interpolation=cv2.INTER_AREA)
+    padded = np.zeros((28, 28), dtype=np.uint8)
+    padded[4:24, 4:24] = digit
 
-    # 8. Padding final pour arriver à 28x28
-    padded = cv2.copyMakeBorder(mask, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=0)
+    # --- NORMALISATION ---
+    padded = padded / 255.0
+    padded = padded.reshape(1, 28, 28, 1)
 
-    # 9. Normalisation pour le modèle
-    final_img = padded.astype('float32') / 255.0
-    return final_img.reshape(1, 28, 28, 1)
+    return padded, quality
 
 # ================================
-# INTERFACE UTILISATEUR (UI)
+# TTA PREDICTION
 # ================================
-st.title("🔢 Reconnaissance de Chiffres")
-st.write("Choisissez votre méthode pour soumettre un chiffre manuscrit (0-9).")
-
-# Création des onglets
-tab_camera, tab_upload = st.tabs(["📷 Appareil Photo", "📁 Importer une Image"])
-
-img_source = None
-
-with tab_camera:
-    camera_input = st.camera_input("Prendre une photo du chiffre")
-    if camera_input:
-        img_source = camera_input
-
-with tab_upload:
-    file_input = st.file_uploader("Choisir une image sur mon PC", type=['png', 'jpg', 'jpeg'])
-    if file_input:
-        img_source = file_input
+def predict_with_tta(img, n=5):
+    preds = []
+    for _ in range(n):
+        shift_x = np.random.randint(-2, 3)
+        shift_y = np.random.randint(-2, 3)
+        shifted = np.roll(img, shift_x, axis=1)
+        shifted = np.roll(shifted, shift_y, axis=2)
+        preds.append(model.predict(shifted, verbose=0))
+    return np.mean(preds, axis=0)
 
 # ================================
-# TRAITEMENT ET PRÉDICTION
+# UI - INTERFACE
 # ================================
-if img_source is not None:
-    # Conversion de l'entrée en tableau Numpy
-    image = Image.open(img_source).convert("RGB")
-    image_np = np.array(image)
+st.title("📷 Reconnaissance de chiffres")
+st.markdown("Prenez une photo d'un chiffre écrit sur papier ou téléchargez un fichier.")
 
-    processed_img = preprocess_digit(image_np)
+tabs = st.tabs(["📷 Appareil Photo", "📁 Upload Fichier"])
 
-    if processed_img is not None:
-        st.divider()
-        col1, col2 = st.columns([1, 1])
+processed = None
+quality = 0.0
 
-        with col1:
-            st.subheader("Aperçu IA")
-            # On affiche l'image traitée en 28x28 (agrandie pour la visibilité)
-            st.image(processed_img.reshape(28, 28), caption="Image normalisée", width=200)
+# --- ONGLET CAMERA ---
+with tabs[0]:
+    cam_image = st.camera_input("Scanner un chiffre")
+    if cam_image:
+        img = Image.open(cam_image).convert("RGB")
+        processed, quality = preprocess_image(np.array(img))
 
-        with col2:
-            # Exécution de la prédiction
-            prediction = model.predict(processed_img, verbose=0)
-            digit = np.argmax(prediction)
-            prob = np.max(prediction)
+# --- ONGLET UPLOAD ---
+with tabs[1]:
+    uploaded = st.file_uploader(
+        "Téléverser une image",
+        type=["png", "jpg", "jpeg"]
+    )
+    if uploaded:
+        image = Image.open(uploaded).convert("RGB")
+        processed, quality = preprocess_image(np.array(image))
 
-            st.subheader("Résultat")
-            if prob > 0.8:
-                st.success(f"Chiffre détecté : **{digit}**")
-            else:
-                st.warning(f"Chiffre probable : **{digit}**")
-            
-            st.metric("Confiance", f"{prob*100:.1f} %")
+# ================================
+# AFFICHAGE DES RÉSULTATS
+# ================================
+if processed is not None:
+    st.divider()
+    col1, col2 = st.columns(2)
 
-        # Détails des probabilités
-        with st.expander("Voir les probabilités détaillées"):
-            for i, val in enumerate(prediction[0]):
-                st.write(f"Chiffre {i} : {val*100:.2f}%")
-                st.progress(float(val))
-    else:
-        st.error("Aucun chiffre n'a été détecté sur l'image. Assurez-vous que le contraste est suffisant.")
+    with col1:
+        st.subheader("Vision de l'IA")
+        st.image(processed.reshape(28, 28), caption="Image après traitement", width=200)
+
+    with col2:
+        prediction = predict_with_tta(processed)
+        digit = int(np.argmax(prediction))
+        confidence = np.max(prediction)
+
+        st.subheader("Résultat")
+        st.success(f"✅ Chiffre reconnu : **{digit}**")
+        st.metric("Confiance", f"{confidence * 100:.1f} %")
+
+    # Graphique des probabilités
+    st.subheader("📊 Probabilités")
+    probs = prediction[0]
+    for i, p in enumerate(probs):
+        st.progress(float(p), text=f"Chiffre {i} : {p*100:.1f}%")
 
 else:
-    st.info("Veuillez prendre une photo ou télécharger un fichier pour lancer l'analyse.")
+    st.info("💡 Prenez une photo ou téléchargez une image pour lancer l'analyse.")
