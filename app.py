@@ -19,7 +19,7 @@ st.set_page_config(
 # ================================
 @st.cache_resource
 def load_model():
-    return tf.keras.models.load_model("mnist_cnn_model.keras")
+    return tf.keras.models.load_model("mnist_model.keras")
 
 model = load_model()
 
@@ -174,4 +174,5 @@ if processed is not None:
         st.progress(float(p), text=f"{i} : {p*100:.1f}%")
 
 else:
+
     st.info("✏️ Dessine ou téléverse un chiffre pour lancer la reconnaissance.")
