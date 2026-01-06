@@ -4,4 +4,4 @@ numpy
 pillow
 opencv-python-headless
 streamlit_drawable_canvas
-
+rembg
