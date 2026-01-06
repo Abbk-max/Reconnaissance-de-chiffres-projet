@@ -1,7 +1,17 @@
-streamlit
-tensorflow
-numpy
-pillow
-opencv-python-headless
-streamlit_drawable_canvas
-rembg
+# Framework Web
+streamlit==1.50.0
+
+# Deep Learning
+tensorflow==2.20.0
+keras==3.13.0
+
+# Traitement d'images
+Pillow==11.1.0
+opencv-python-headless==4.11.0.86
+rembg==2.0.59
+streamlit-drawable-canvas==0.9.3
+
+# Calcul numérique et données
+numpy==2.3.5
+pandas==2.3.3
+scipy==1.15.1
